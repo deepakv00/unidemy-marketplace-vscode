@@ -2,44 +2,68 @@
 
 import type React from "react"
 
-import { useState, useMemo } from "react"
+import { useState, useEffect, useMemo } from "react"
 import { useSearchParams } from "next/navigation"
 import { Search, Grid, List } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Badge } from "@/components/ui/badge"
-import { useApp, type Product } from "@/store"
+import { getAllProducts, searchProducts } from "@/lib/api/products"
+import { getCategories } from "@/lib/api/categories"
+import { createClient } from "@/lib/supabase-client"
+import type { Database } from "@/lib/supabase"
 import ProductCard from "@/product-card"
 
+type Product = Database['public']['Tables']['products']['Row'] & {
+  users: {
+    id: string
+    name: string
+    rating: number
+    verified: boolean
+    avatar?: string
+  }
+}
+
 const SearchPage = () => {
-  const { state } = useApp()
   const searchParams = useSearchParams()
   const initialQuery = searchParams.get("q") || ""
-
+  
+  const [products, setProducts] = useState<Product[]>([])
+  const [categories, setCategories] = useState<any[]>([])
+  const [loading, setLoading] = useState(true)
   const [searchQuery, setSearchQuery] = useState(initialQuery)
   const [sortBy, setSortBy] = useState("newest")
   const [viewMode, setViewMode] = useState<"grid" | "list">("grid")
   const [categoryFilter, setCategoryFilter] = useState("all")
   const [priceRange, setPriceRange] = useState("all")
 
+  // Load products and categories
+  useEffect(() => {
+    async function loadData() {
+      try {
+        setLoading(true)
+        const [productsData, categoriesData] = await Promise.all([
+          searchQuery.trim() ? searchProducts(searchQuery) : getAllProducts(),
+          getCategories()
+        ])
+        setProducts(productsData)
+        setCategories(categoriesData)
+      } catch (error) {
+        console.error('Error loading search data:', error)
+      } finally {
+        setLoading(false)
+      }
+    }
+    
+    loadData()
+  }, [searchQuery])
+
   // Search and filter products
   const filteredProducts = useMemo(() => {
-    if (!state.products) return []
+    if (!products) return []
 
-    let filtered = state.products
-
-    // Apply search query filter
-    if (searchQuery.trim()) {
-      const query = searchQuery.toLowerCase()
-      filtered = filtered.filter(
-        (product: Product) =>
-          product.title.toLowerCase().includes(query) ||
-          product.description?.toLowerCase().includes(query) ||
-          product.category.toLowerCase().includes(query) ||
-          product.seller.name.toLowerCase().includes(query),
-      )
-    }
+    let filtered = products
 
     // Apply category filter
     if (categoryFilter !== "all") {
@@ -75,33 +99,30 @@ const SearchPage = () => {
           return b.price - a.price
         case "newest":
         default:
-          return b.id - a.id
+          return new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
       }
     })
-  }, [state.products, searchQuery, categoryFilter, priceRange, sortBy])
+  }, [products, categoryFilter, priceRange, sortBy])
 
-  // Get unique categories from products
+  // Get categories for filter dropdown
   const availableCategories = useMemo(() => {
-    if (!state.products) return []
-    const categories = [...new Set(state.products.map((p: Product) => p.category))]
     return categories.map((cat) => ({
-      value: cat,
-      label:
-        cat === "donate-giveaway"
-          ? "Donate/Giveaway"
-          : cat === "moving-out"
-            ? "Moving Out"
-            : cat === "home-garden"
-              ? "Home & Garden"
-              : cat === "baby-kids"
-                ? "Baby & Kids"
-                : cat.charAt(0).toUpperCase() + cat.slice(1),
+      value: cat.slug,
+      label: cat.name,
     }))
-  }, [state.products])
+  }, [categories])
 
-  const handleSearch = (e: React.FormEvent) => {
+  const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault()
-    // Search is handled by the useMemo effect
+    try {
+      setLoading(true)
+      const results = searchQuery.trim() ? await searchProducts(searchQuery) : await getAllProducts()
+      setProducts(results)
+    } catch (error) {
+      console.error('Error searching products:', error)
+    } finally {
+      setLoading(false)
+    }
   }
 
   return (
@@ -225,7 +246,18 @@ const SearchPage = () => {
         </div>
 
         {/* Results */}
-        {filteredProducts.length > 0 ? (
+        {loading ? (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+            {Array.from({ length: 8 }).map((_, i) => (
+              <div key={i} className="bg-white dark:bg-gray-700 rounded-lg p-4 animate-pulse">
+                <div className="aspect-square bg-gray-200 dark:bg-gray-600 rounded-lg mb-4"></div>
+                <div className="h-4 bg-gray-200 dark:bg-gray-600 rounded mb-2"></div>
+                <div className="h-4 bg-gray-200 dark:bg-gray-600 rounded w-2/3 mb-2"></div>
+                <div className="h-4 bg-gray-200 dark:bg-gray-600 rounded w-1/2"></div>
+              </div>
+            ))}
+          </div>
+        ) : filteredProducts.length > 0 ? (
           <div
             className={
               viewMode === "grid" ? "grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6" : "space-y-4"

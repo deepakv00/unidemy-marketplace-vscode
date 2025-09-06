@@ -194,6 +194,31 @@ export async function deleteProduct(id: number): Promise<boolean> {
   return true
 }
 
+export async function updateProductById(id: number, updates: Partial<ProductUpdate>): Promise<Product | null> {
+  const { data, error } = await supabase
+    .from('products')
+    .update({ ...updates, updated_at: new Date().toISOString() })
+    .eq('id', id)
+    .select(`
+      *,
+      users!products_seller_id_fkey (
+        id,
+        name,
+        rating,
+        verified,
+        avatar
+      )
+    `)
+    .single()
+
+  if (error) {
+    console.error('Error updating product:', error)
+    return null
+  }
+
+  return data
+}
+
 export async function getFeaturedProducts(limit: number = 8): Promise<Product[]> {
   const { data, error } = await supabase
     .from('products')
@@ -267,5 +292,19 @@ export async function getMovingOutProducts(): Promise<Product[]> {
   }
 
   return data || []
+}
+
+export async function incrementProductViews(productId: number): Promise<boolean> {
+  const { error } = await supabase
+    .rpc('increment_product_views', {
+      product_id: productId
+    })
+
+  if (error) {
+    console.error('Error incrementing product views:', error)
+    return false
+  }
+
+  return true
 }
 

@@ -6,26 +6,92 @@ import { Plus, Package, Eye, TrendingUp, User, LogOut, Edit, Trash2 } from "luci
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { useApp } from "@/store"
-import type { Product } from "@/store"
+import { createClient } from "@/lib/supabase-client"
+import { getProductsBySeller } from "@/lib/api/products"
+import { getWishlistCount } from "@/lib/api/wishlist"
+import type { Database } from "@/lib/supabase"
 import Image from "next/image"
 
+type Product = Database['public']['Tables']['products']['Row'] & {
+  users: {
+    id: string
+    name: string
+    rating: number
+    verified: boolean
+    avatar?: string
+  }
+}
+
+// Utility function to calculate time ago
+function getTimeAgo(dateString: string): string {
+  const now = new Date()
+  const past = new Date(dateString)
+  const diffMs = now.getTime() - past.getTime()
+  
+  const diffSeconds = Math.floor(diffMs / 1000)
+  const diffMinutes = Math.floor(diffSeconds / 60)
+  const diffHours = Math.floor(diffMinutes / 60)
+  const diffDays = Math.floor(diffHours / 24)
+  
+  if (diffDays > 0) return `${diffDays} day${diffDays > 1 ? 's' : ''} ago`
+  if (diffHours > 0) return `${diffHours} hour${diffHours > 1 ? 's' : ''} ago`
+  if (diffMinutes > 0) return `${diffMinutes} minute${diffMinutes > 1 ? 's' : ''} ago`
+  return 'Just now'
+}
+
 export default function DashboardPage() {
-  const { state, dispatch } = useApp()
+  const supabase = createClient()
+  const [user, setUser] = useState<any>(null)
   const [userListings, setUserListings] = useState<Product[]>([])
+  const [wishlistCount, setWishlistCount] = useState(0)
+  const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    if (state.user && state.products) {
-      const listings = state.products.filter((product: Product) => product.seller.name === state.user?.name)
-      setUserListings(listings)
+    async function loadUserData() {
+      try {
+        const { data: { user } } = await supabase.auth.getUser()
+        setUser(user)
+        
+        if (user) {
+          // Load user's products
+          const products = await getProductsBySeller(user.id)
+          setUserListings(products)
+          
+          // Load wishlist count
+          const count = await getWishlistCount(user.id)
+          setWishlistCount(count)
+        }
+      } catch (error) {
+        console.error('Error loading user data:', error)
+      } finally {
+        setLoading(false)
+      }
     }
-  }, [state.user, state.products])
+    
+    loadUserData()
+  }, [])
 
-  const handleLogout = () => {
-    dispatch({ type: "LOGOUT" })
+  const handleLogout = async () => {
+    await supabase.auth.signOut()
+    setUser(null)
+    setUserListings([])
+    setWishlistCount(0)
   }
 
-  if (!state.isAuthenticated) {
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gray-50 dark:bg-gray-900 flex items-center justify-center">
+        <Card className="w-full max-w-md">
+          <CardContent className="p-8 text-center">
+            <h2 className="text-2xl font-bold mb-4">Loading...</h2>
+            <p className="text-gray-600 dark:text-gray-400 mb-6">Please wait while we load your dashboard.</p>
+          </CardContent>
+        </Card>
+      </div>
+    )
+  }
+
+  if (!user) {
     return (
       <div className="min-h-screen bg-gray-50 dark:bg-gray-900 flex items-center justify-center">
         <Card className="w-full max-w-md">
@@ -102,7 +168,7 @@ export default function DashboardPage() {
         <div className="flex-1 p-8">
           <div className="flex items-center justify-between mb-8">
             <div>
-              <h1 className="text-3xl font-bold text-gray-900 dark:text-white">Welcome back, {state.user?.name}!</h1>
+              <h1 className="text-3xl font-bold text-gray-900 dark:text-white">Welcome back, {user?.user_metadata?.name || user?.email}!</h1>
               <p className="text-gray-600 dark:text-gray-400">Manage your listings and track your activity</p>
             </div>
             <Link href="/">
@@ -135,7 +201,7 @@ export default function DashboardPage() {
                   <div>
                     <p className="text-sm font-medium text-gray-600 dark:text-gray-400">Total Views</p>
                     <p className="text-3xl font-bold text-gray-900 dark:text-white">
-                      {userListings.reduce((total, listing) => total + 234, 0)}
+                      {userListings.reduce((total, listing) => total + (listing.views || 0), 0)}
                     </p>
                   </div>
                   <div className="h-12 w-12 bg-green-100 dark:bg-green-900 rounded-lg flex items-center justify-center">
@@ -150,7 +216,7 @@ export default function DashboardPage() {
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="text-sm font-medium text-gray-600 dark:text-gray-400">Favorites</p>
-                    <p className="text-3xl font-bold text-gray-900 dark:text-white">{state.wishlist.length}</p>
+                    <p className="text-3xl font-bold text-gray-900 dark:text-white">{wishlistCount}</p>
                   </div>
                   <div className="h-12 w-12 bg-purple-100 dark:bg-purple-900 rounded-lg flex items-center justify-center">
                     <TrendingUp className="h-6 w-6 text-purple-600" />
@@ -179,7 +245,7 @@ export default function DashboardPage() {
                       <div className="relative">
                         <div className="relative h-48 overflow-hidden rounded-t-lg">
                           <Image
-                            src={listing.image || "/placeholder.svg"}
+                            src={listing.images?.[0] || "/placeholder.svg"}
                             alt={listing.title}
                             fill
                             className="object-cover group-hover:scale-105 transition-transform duration-300"
@@ -194,9 +260,10 @@ export default function DashboardPage() {
                               size="sm"
                               variant="secondary"
                               className="h-8 w-8 p-0 rounded-full bg-white/90"
-                              onClick={() => {
+                              onClick={async () => {
                                 if (window.confirm("Are you sure you want to delete this product?")) {
-                                  dispatch({ type: "DELETE_PRODUCT", payload: listing.id })
+                                  // TODO: Implement product deletion API
+                                  console.log('Delete product:', listing.id)
                                 }
                               }}
                             >
@@ -209,7 +276,7 @@ export default function DashboardPage() {
                             <Badge variant="secondary" className="text-xs">
                               {listing.condition}
                             </Badge>
-                            <span className="text-xs text-gray-500">234 views</span>
+                            <span className="text-xs text-gray-500">{listing.views || 0} views</span>
                           </div>
                           <Link href={`/listing/${listing.id}`}>
                             <h3 className="font-semibold text-sm mb-2 text-gray-900 dark:text-white hover:text-blue-600 transition-colors line-clamp-2">
@@ -218,7 +285,7 @@ export default function DashboardPage() {
                           </Link>
                           <div className="flex items-center justify-between">
                             <span className="text-lg font-bold text-green-600">₹{listing.price.toLocaleString()}</span>
-                            <span className="text-xs text-gray-500">{listing.timeAgo}</span>
+                            <span className="text-xs text-gray-500">{getTimeAgo(listing.created_at)}</span>
                           </div>
                         </CardContent>
                       </div>

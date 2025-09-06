@@ -2,9 +2,7 @@
 
 import type React from "react"
 
-import { useState } from "react"
-import { createClient } from "@/lib/supabase-client"
-import { useAuth } from "@/lib/auth-context"
+import { useState, useEffect } from "react"
 import { useRouter } from "next/navigation"
 import { Upload, X, ArrowLeft } from "lucide-react"
 import { Button } from "@/components/ui/button"
@@ -13,15 +11,17 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { useApp } from "@/store"
 import { useToast } from "@/hooks/use-toast"
+import { createClient } from "@/lib/supabase-client"
+import { createProduct } from "@/lib/api/products"
 import Link from "next/link"
 
-  const { state, dispatch } = useApp()
+export default function SellPage() {
+  const supabase = createClient()
   const { toast } = useToast()
   const router = useRouter()
-  const supabase = createClient()
-  const { user } = useAuth()
+  const [user, setUser] = useState<any>(null)
+  const [loading, setLoading] = useState(true)
 
   const [formData, setFormData] = useState({
     title: "",
@@ -31,34 +31,77 @@ import Link from "next/link"
     category: "",
     condition: "",
     location: "",
-    images: [] as string[],
+    images: [] as File[],
+    imageUrls: [] as string[],
   })
 
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [uploadingImages, setUploadingImages] = useState(false)
+
+  useEffect(() => {
+    async function getUser() {
+      const { data: { user } } = await supabase.auth.getUser()
+      setUser(user)
+      setLoading(false)
+    }
+    getUser()
+  }, [])
 
   const handleInputChange = (field: string, value: string) => {
     setFormData((prev) => ({ ...prev, [field]: value }))
   }
 
+  const uploadImageToSupabase = async (file: File, userId: string): Promise<string | null> => {
+    try {
+      const fileExt = file.name.split('.').pop()
+      const fileName = `${userId}/${Date.now()}.${fileExt}`
+      
+      const { data, error } = await supabase.storage
+        .from('product-images')
+        .upload(fileName, file)
+      
+      if (error) {
+        console.error('Error uploading image:', error)
+        return null
+      }
+      
+      const { data: { publicUrl } } = supabase.storage
+        .from('product-images')
+        .getPublicUrl(data.path)
+      
+      return publicUrl
+    } catch (error) {
+      console.error('Error uploading image:', error)
+      return null
+    }
+  }
+
   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files
-    if (files) {
-      const uploadedUrls: string[] = []
-      for (const file of Array.from(files)) {
-        const fileExt = file.name.split('.').pop()
-        const fileName = `${user?.id || 'anon'}-${Date.now()}-${Math.random().toString(36).substring(2, 8)}.${fileExt}`
-        const { data, error } = await supabase.storage.from('product-images').upload(fileName, file)
-        if (error) {
-          toast({ title: 'Image upload failed', description: error.message, variant: 'destructive' })
-        } else {
-          const url = supabase.storage.from('product-images').getPublicUrl(fileName).data.publicUrl
-          uploadedUrls.push(url)
-        }
-      }
+    if (!files || !user) return
+    
+    setUploadingImages(true)
+    const newFiles = Array.from(files).slice(0, 8 - formData.images.length)
+    
+    try {
+      const uploadPromises = newFiles.map(file => uploadImageToSupabase(file, user.id))
+      const uploadedUrls = await Promise.all(uploadPromises)
+      const successfulUrls = uploadedUrls.filter(url => url !== null) as string[]
+      
       setFormData((prev) => ({
         ...prev,
-        images: [...prev.images, ...uploadedUrls].slice(0, 8), // Max 8 images
+        images: [...prev.images, ...newFiles].slice(0, 8),
+        imageUrls: [...prev.imageUrls, ...successfulUrls].slice(0, 8),
       }))
+    } catch (error) {
+      console.error('Error uploading images:', error)
+      toast({
+        title: "Upload failed",
+        description: "Failed to upload some images. Please try again.",
+        variant: "destructive",
+      })
+    } finally {
+      setUploadingImages(false)
     }
   }
 
@@ -66,6 +109,7 @@ import Link from "next/link"
     setFormData((prev) => ({
       ...prev,
       images: prev.images.filter((_, i) => i !== index),
+      imageUrls: prev.imageUrls.filter((_, i) => i !== index),
     }))
   }
 
@@ -108,40 +152,43 @@ import Link from "next/link"
     setIsSubmitting(true)
 
     try {
-      // Insert product into Supabase
-      const { data, error } = await supabase.from('products').insert([
-        {
-          title: formData.title,
-          description: formData.description,
-          price: formData.category === "donate-giveaway" ? 0 : Number.parseFloat(formData.price),
-          original_price: formData.originalPrice ? Number.parseFloat(formData.originalPrice) : null,
-          category: formData.category,
-          condition: formData.condition,
-          location: formData.location || "New York, NY",
-          seller_id: user.id,
-          images: formData.images,
-          specifications: {
-            Condition: formData.condition,
-            Category: formData.category,
-          },
+      const productData = {
+        title: formData.title,
+        description: formData.description,
+        price: formData.category === "donate-giveaway" ? 0 : Number.parseFloat(formData.price),
+        original_price: formData.originalPrice ? Number.parseFloat(formData.originalPrice) : undefined,
+        category: formData.category,
+        condition: formData.condition,
+        location: formData.location || "Location not specified",
+        seller_id: user.id,
+        images: formData.imageUrls,
+        specifications: {
+          Condition: formData.condition,
+          Category: formData.category,
         },
-      ]).select().single()
-      if (error) throw error
+      }
 
-      toast({
-        title: "Listing created successfully!",
-        description:
-          formData.category === "donate-giveaway"
-            ? "Your donation has been listed and will help someone in need!"
-            : "Your item has been listed and is now live on the marketplace.",
-      })
+      const newProduct = await createProduct(productData)
 
-      // Redirect to the new product page
-      router.push(`/listing/${data.id}`)
-    } catch (error: any) {
+      if (newProduct) {
+        toast({
+          title: "Listing created successfully!",
+          description:
+            formData.category === "donate-giveaway"
+              ? "Your donation has been listed and will help someone in need!"
+              : "Your item has been listed and is now live on the marketplace.",
+        })
+
+        // Redirect to dashboard or product list
+        router.push('/dashboard')
+      } else {
+        throw new Error('Failed to create product')
+      }
+    } catch (error) {
+      console.error('Error creating product:', error)
       toast({
         title: "Error creating listing",
-        description: error.message || "Something went wrong. Please try again.",
+        description: "Something went wrong. Please try again.",
         variant: "destructive",
       })
     } finally {
@@ -149,7 +196,20 @@ import Link from "next/link"
     }
   }
 
-  if (!state.isAuthenticated) {
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gray-50 dark:bg-gray-900 flex items-center justify-center">
+        <Card className="w-full max-w-md">
+          <CardContent className="p-8 text-center">
+            <h2 className="text-2xl font-bold mb-4">Loading...</h2>
+            <p className="text-gray-600 dark:text-gray-400 mb-6">Please wait while we load your session.</p>
+          </CardContent>
+        </Card>
+      </div>
+    )
+  }
+
+  if (!user) {
     return (
       <div className="min-h-screen bg-gray-50 dark:bg-gray-900 flex items-center justify-center">
         <Card className="w-full max-w-md">
@@ -285,11 +345,11 @@ import Link from "next/link"
                 </CardHeader>
                 <CardContent>
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
-                    {formData.images.map((image, index) => (
+                    {formData.imageUrls.map((imageUrl, index) => (
                       <div key={index} className="relative group">
                         <div className="aspect-square bg-gray-100 rounded-lg overflow-hidden">
                           <img
-                            src={image || "/placeholder.svg"}
+                            src={imageUrl || "/placeholder.svg"}
                             alt={`Upload ${index + 1}`}
                             className="w-full h-full object-cover"
                           />
@@ -307,10 +367,19 @@ import Link from "next/link"
                     ))}
 
                     {formData.images.length < 8 && (
-                      <label className="aspect-square border-2 border-dashed border-gray-300 rounded-lg flex flex-col items-center justify-center cursor-pointer hover:border-blue-500 transition-colors">
+                      <label className={`aspect-square border-2 border-dashed border-gray-300 rounded-lg flex flex-col items-center justify-center cursor-pointer hover:border-blue-500 transition-colors ${uploadingImages ? 'opacity-50 cursor-not-allowed' : ''}`}>
                         <Upload className="h-8 w-8 text-gray-400 mb-2" />
-                        <span className="text-sm text-gray-500">Add Photo</span>
-                        <input type="file" multiple accept="image/*" onChange={handleImageUpload} className="hidden" />
+                        <span className="text-sm text-gray-500">
+                          {uploadingImages ? 'Uploading...' : 'Add Photo'}
+                        </span>
+                        <input 
+                          type="file" 
+                          multiple 
+                          accept="image/*" 
+                          onChange={handleImageUpload} 
+                          className="hidden" 
+                          disabled={uploadingImages}
+                        />
                       </label>
                     )}
                   </div>
@@ -392,9 +461,9 @@ import Link from "next/link"
                 <CardContent>
                   <div className="border rounded-lg p-4">
                     <div className="aspect-video bg-gray-100 rounded mb-3 flex items-center justify-center relative">
-                      {formData.images.length > 0 ? (
+                      {formData.imageUrls.length > 0 ? (
                         <img
-                          src={formData.images[0] || "/placeholder.svg"}
+                          src={formData.imageUrls[0] || "/placeholder.svg"}
                           alt="Preview"
                           className="w-full h-full object-cover rounded"
                         />

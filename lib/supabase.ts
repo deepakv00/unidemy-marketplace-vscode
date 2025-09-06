@@ -3,7 +3,7 @@ import { createClient } from '@supabase/supabase-js'
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 
-export const supabase = createClient(supabaseUrl, supabaseAnonKey)
+export const supabase = createClient<Database>(supabaseUrl, supabaseAnonKey)
 
 // Database types
 export interface Database {
@@ -65,6 +65,7 @@ export interface Database {
           images: string[]
           specifications: Record<string, string>
           status: 'active' | 'sold' | 'draft'
+          views: number
           created_at: string
           updated_at: string
         }
@@ -82,6 +83,7 @@ export interface Database {
           images?: string[]
           specifications?: Record<string, string>
           status?: 'active' | 'sold' | 'draft'
+          views?: number
           created_at?: string
           updated_at?: string
         }
@@ -99,6 +101,7 @@ export interface Database {
           images?: string[]
           specifications?: Record<string, string>
           status?: 'active' | 'sold' | 'draft'
+          views?: number
           created_at?: string
           updated_at?: string
         }

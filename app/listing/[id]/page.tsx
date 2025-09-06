@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, use } from "react"
 import Image from "next/image"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
@@ -31,14 +31,47 @@ import { Textarea } from "@/components/ui/textarea"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { useApp, type Product } from "@/store"
+import { createClient } from "@/lib/supabase-client"
+import { getProductById, updateProductById, deleteProduct, incrementProductViews } from "@/lib/api/products"
+import { addToWishlist, removeFromWishlist, isInWishlist } from "@/lib/api/wishlist"
+import type { Database } from "@/lib/supabase"
 import { useToast } from "@/hooks/use-toast"
 
-export default function ListingPage({ params }: { params: { id: string } }) {
-  const { state, dispatch } = useApp()
+type Product = Database['public']['Tables']['products']['Row'] & {
+  users: {
+    id: string
+    name: string
+    rating: number
+    verified: boolean
+    avatar?: string
+  }
+}
+
+// Utility function to calculate time ago
+function getTimeAgo(dateString: string): string {
+  const now = new Date()
+  const past = new Date(dateString)
+  const diffMs = now.getTime() - past.getTime()
+  
+  const diffSeconds = Math.floor(diffMs / 1000)
+  const diffMinutes = Math.floor(diffSeconds / 60)
+  const diffHours = Math.floor(diffMinutes / 60)
+  const diffDays = Math.floor(diffHours / 24)
+  
+  if (diffDays > 0) return `${diffDays} day${diffDays > 1 ? 's' : ''} ago`
+  if (diffHours > 0) return `${diffHours} hour${diffHours > 1 ? 's' : ''} ago`
+  if (diffMinutes > 0) return `${diffMinutes} minute${diffMinutes > 1 ? 's' : ''} ago`
+  return 'Just now'
+}
+
+export default function ListingPage({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = use(params)
+  const supabase = createClient()
   const { toast } = useToast()
   const router = useRouter()
+  const [user, setUser] = useState<any>(null)
   const [listing, setListing] = useState<Product | null>(null)
+  const [loading, setLoading] = useState(true)
   const [currentImageIndex, setCurrentImageIndex] = useState(0)
   const [isLiked, setIsLiked] = useState(false)
   const [message, setMessage] = useState("")
@@ -53,28 +86,61 @@ export default function ListingPage({ params }: { params: { id: string } }) {
   })
 
   useEffect(() => {
-    const productId = Number.parseInt(params.id)
-    console.log("[v0] Looking for product ID:", productId)
-    console.log("[v0] Available products:", state.products)
-
-    const product = state.products?.find((p: Product) => p.id === productId)
-    console.log("[v0] Found product:", product)
-
-    if (product) {
-      setListing(product)
-      setIsLiked(state.wishlist.some((item) => item.id === product.id))
-      setEditForm({
-        title: product.title,
-        description: product.description || "",
-        price: product.price,
-        category: product.category,
-        condition: product.condition,
-        location: product.location,
-      })
+    async function loadProductData() {
+      try {
+        setLoading(true)
+        const productId = Number.parseInt(id)
+        
+        // Get user session
+        const { data: { user } } = await supabase.auth.getUser()
+        setUser(user)
+        
+        // Get product details
+        const product = await getProductById(productId)
+        if (product) {
+          setListing(product)
+          setEditForm({
+            title: product.title,
+            description: product.description || "",
+            price: product.price,
+            category: product.category,
+            condition: product.condition,
+            location: product.location,
+          })
+          
+          // Increment view count (only if not the owner viewing their own product)
+          if (!user || user.id !== product.seller_id) {
+            await incrementProductViews(productId)
+          }
+          
+          // Check if in wishlist
+          if (user) {
+            const wishlistStatus = await isInWishlist(user.id, product.id)
+            setIsLiked(wishlistStatus)
+          }
+        }
+      } catch (error) {
+        console.error('Error loading product:', error)
+      } finally {
+        setLoading(false)
+      }
     }
-  }, [params.id, state.wishlist, state.products])
+    
+    loadProductData()
+  }, [id])
 
-  const isOwner = listing && state.user && state.user.name === listing.seller.name
+  const isOwner = listing && user && user.id === listing.seller_id
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gray-50 dark:bg-gray-900 flex items-center justify-center">
+        <div className="text-center">
+          <h2 className="text-2xl font-bold mb-4">Loading product...</h2>
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto"></div>
+        </div>
+      </div>
+    )
+  }
 
   if (!listing) {
     return (
@@ -92,7 +158,7 @@ export default function ListingPage({ params }: { params: { id: string } }) {
     )
   }
 
-  const images = [listing.image, listing.image, listing.image, listing.image] // Mock multiple images
+  const images = listing.images && listing.images.length > 0 ? listing.images : ['/placeholder.svg']
 
   const nextImage = () => {
     setCurrentImageIndex((prev) => (prev + 1) % images.length)
@@ -102,8 +168,8 @@ export default function ListingPage({ params }: { params: { id: string } }) {
     setCurrentImageIndex((prev) => (prev - 1 + images.length) % images.length)
   }
 
-  const handleAddToWishlist = () => {
-    if (!state.isAuthenticated) {
+  const handleAddToWishlist = async () => {
+    if (!user) {
       toast({
         title: "Authentication required",
         description: "Please sign in to add items to your favorites.",
@@ -113,25 +179,37 @@ export default function ListingPage({ params }: { params: { id: string } }) {
       return
     }
 
-    if (isLiked) {
-      dispatch({ type: "REMOVE_FROM_WISHLIST", payload: listing.id })
-      setIsLiked(false)
+    try {
+      if (isLiked) {
+        const success = await removeFromWishlist(user.id, listing.id)
+        if (success) {
+          setIsLiked(false)
+          toast({
+            title: "Removed from favorites",
+            description: `${listing.title} has been removed from your favorites.`,
+          })
+        }
+      } else {
+        const success = await addToWishlist(user.id, listing.id)
+        if (success) {
+          setIsLiked(true)
+          toast({
+            title: "Added to favorites",
+            description: `${listing.title} has been added to your favorites.`,
+          })
+        }
+      }
+    } catch (error) {
       toast({
-        title: "Removed from favorites",
-        description: `${listing.title} has been removed from your favorites.`,
-      })
-    } else {
-      dispatch({ type: "ADD_TO_WISHLIST", payload: listing })
-      setIsLiked(true)
-      toast({
-        title: "Added to favorites",
-        description: `${listing.title} has been added to your favorites.`,
+        title: "Error",
+        description: "Something went wrong. Please try again.",
+        variant: "destructive",
       })
     }
   }
 
   const handleContactSeller = () => {
-    if (!state.isAuthenticated) {
+    if (!user) {
       toast({
         title: "Authentication required",
         description: "Please sign in to contact sellers.",
@@ -142,11 +220,11 @@ export default function ListingPage({ params }: { params: { id: string } }) {
     }
 
     // Redirect to messages with seller info
-    router.push(`/messages?seller=${encodeURIComponent(listing.seller.name)}&product=${listing.id}`)
+    router.push(`/messages?seller=${encodeURIComponent(listing.users?.name || 'Seller')}&product=${listing.id}`)
   }
 
   const handleCallSeller = () => {
-    if (!state.isAuthenticated) {
+    if (!user) {
       toast({
         title: "Authentication required",
         description: "Please sign in to view contact details.",
@@ -158,7 +236,7 @@ export default function ListingPage({ params }: { params: { id: string } }) {
 
     toast({
       title: "Contact Number",
-      description: "Call +91 98765 43210 to speak with the seller directly.",
+      description: "Contact details would be shown here for verified users.",
     })
   }
 
@@ -166,20 +244,37 @@ export default function ListingPage({ params }: { params: { id: string } }) {
     setIsEditing(true)
   }
 
-  const handleSaveEdit = () => {
-    const updatedProduct = {
-      ...listing,
-      ...editForm,
+  const handleSaveEdit = async () => {
+    try {
+      const updates = {
+        title: editForm.title,
+        description: editForm.description,
+        price: editForm.price,
+        category: editForm.category,
+        condition: editForm.condition,
+        location: editForm.location,
+      }
+      
+      const updatedProduct = await updateProductById(listing.id, updates)
+      
+      if (updatedProduct) {
+        setListing(updatedProduct)
+        setIsEditing(false)
+        toast({
+          title: "Product updated",
+          description: "Your product has been updated successfully.",
+        })
+      } else {
+        throw new Error('Failed to update product')
+      }
+    } catch (error) {
+      console.error('Error updating product:', error)
+      toast({
+        title: "Error updating product",
+        description: "Something went wrong. Please try again.",
+        variant: "destructive",
+      })
     }
-
-    dispatch({ type: "UPDATE_PRODUCT", payload: updatedProduct })
-    setListing(updatedProduct)
-    setIsEditing(false)
-
-    toast({
-      title: "Product updated",
-      description: "Your product has been updated successfully.",
-    })
   }
 
   const handleCancelEdit = () => {
@@ -194,14 +289,28 @@ export default function ListingPage({ params }: { params: { id: string } }) {
     setIsEditing(false)
   }
 
-  const handleDelete = () => {
+  const handleDelete = async () => {
     if (window.confirm("Are you sure you want to delete this product? This action cannot be undone.")) {
-      dispatch({ type: "DELETE_PRODUCT", payload: listing.id })
-      toast({
-        title: "Product deleted",
-        description: "Your product has been deleted successfully.",
-      })
-      router.push("/dashboard")
+      try {
+        const success = await deleteProduct(listing.id)
+        
+        if (success) {
+          toast({
+            title: "Product deleted",
+            description: "Your product has been deleted successfully.",
+          })
+          router.push("/dashboard")
+        } else {
+          throw new Error('Failed to delete product')
+        }
+      } catch (error) {
+        console.error('Error deleting product:', error)
+        toast({
+          title: "Error deleting product",
+          description: "Something went wrong. Please try again.",
+          variant: "destructive",
+        })
+      }
     }
   }
 
@@ -507,9 +616,9 @@ export default function ListingPage({ params }: { params: { id: string } }) {
                   ) : (
                     <>
                       <span className="text-3xl font-bold text-green-600">₹{listing.price.toLocaleString()}</span>
-                      {listing.originalPrice && (
+                      {listing.original_price && (
                         <span className="text-lg text-gray-500 line-through ml-3">
-                          ₹{listing.originalPrice.toLocaleString()}
+                          ₹{listing.original_price.toLocaleString()}
                         </span>
                       )}
                     </>
@@ -520,7 +629,7 @@ export default function ListingPage({ params }: { params: { id: string } }) {
                   <MapPin className="h-4 w-4 mr-1" />
                   {listing.location}
                   <Clock className="h-4 w-4 ml-4 mr-1" />
-                  {listing.timeAgo}
+                  {getTimeAgo(listing.created_at)}
                   <Eye className="h-4 w-4 ml-4 mr-1" />
                   234 views
                 </div>
@@ -624,13 +733,13 @@ export default function ListingPage({ params }: { params: { id: string } }) {
                 <CardContent>
                   <div className="flex items-start space-x-4">
                     <Avatar className="h-16 w-16">
-                      <AvatarImage src="/placeholder.svg" alt={listing.seller.name} />
-                      <AvatarFallback>{listing.seller.name.charAt(0)}</AvatarFallback>
+                      <AvatarImage src={listing.users?.avatar || "/placeholder.svg"} alt={listing.users?.name || 'Seller'} />
+                      <AvatarFallback>{(listing.users?.name || 'S').charAt(0)}</AvatarFallback>
                     </Avatar>
                     <div className="flex-1">
                       <div className="flex items-center mb-2">
-                        <h3 className="font-semibold text-lg">{listing.seller.name}</h3>
-                        {listing.seller.verified && (
+                        <h3 className="font-semibold text-lg">{listing.users?.name || 'Unknown Seller'}</h3>
+                        {listing.users?.verified && (
                           <Badge variant="secondary" className="ml-2 text-xs">
                             ✓ Verified
                           </Badge>
@@ -638,14 +747,14 @@ export default function ListingPage({ params }: { params: { id: string } }) {
                       </div>
                       <div className="flex items-center mb-2">
                         <Star className="h-4 w-4 fill-yellow-400 text-yellow-400 mr-1" />
-                        <span className="font-medium">{listing.seller.rating}</span>
+                        <span className="font-medium">{listing.users?.rating || 4.0}</span>
                         <span className="text-gray-500 ml-1">(127 reviews)</span>
                       </div>
                       <p className="text-sm text-gray-600 dark:text-gray-400 mb-1">Member since 2019</p>
                       <p className="text-sm text-gray-600 dark:text-gray-400">Usually responds within 1 hour</p>
                     </div>
                   </div>
-                  <Link href={`/seller/${encodeURIComponent(listing.seller.name)}`}>
+                  <Link href={`/seller/${encodeURIComponent(listing.users?.name || 'unknown')}`}>
                     <Button variant="outline" className="w-full mt-4 bg-transparent">
                       View All Ads by This Seller
                     </Button>

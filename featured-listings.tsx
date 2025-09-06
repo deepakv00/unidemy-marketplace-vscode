@@ -5,17 +5,37 @@ import { useRouter } from "next/navigation"
 import { ArrowRight } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import ProductCard from "@/product-card"
-import { getAllProducts } from "@/products"
-import type { Product } from "@/store"
+import { getFeaturedProducts } from "@/lib/api/products"
+import type { Database } from "@/lib/supabase"
+
+type Product = Database['public']['Tables']['products']['Row'] & {
+  users: {
+    id: string
+    name: string
+    rating: number
+    verified: boolean
+    avatar?: string
+  }
+}
 
 export default function FeaturedListings() {
   const [featuredListings, setFeaturedListings] = useState<Product[]>([])
+  const [loading, setLoading] = useState(true)
   const router = useRouter()
 
   useEffect(() => {
-    // Get first 6 products as featured
-    const allProducts = getAllProducts()
-    setFeaturedListings(allProducts.slice(0, 6))
+    async function loadFeaturedProducts() {
+      try {
+        const products = await getFeaturedProducts(6)
+        setFeaturedListings(products)
+      } catch (error) {
+        console.error('Error loading featured products:', error)
+      } finally {
+        setLoading(false)
+      }
+    }
+    
+    loadFeaturedProducts()
   }, [])
 
   const handleViewAllClick = useCallback(() => {
@@ -41,9 +61,25 @@ export default function FeaturedListings() {
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
-          {featuredListings.map((listing) => (
-            <ProductCard key={listing.id} product={listing} />
-          ))}
+          {loading ? (
+            // Loading skeleton
+            Array.from({ length: 6 }).map((_, i) => (
+              <div key={i} className="bg-white dark:bg-gray-700 rounded-lg p-4 animate-pulse">
+                <div className="aspect-square bg-gray-200 dark:bg-gray-600 rounded-lg mb-4"></div>
+                <div className="h-4 bg-gray-200 dark:bg-gray-600 rounded mb-2"></div>
+                <div className="h-4 bg-gray-200 dark:bg-gray-600 rounded w-2/3 mb-2"></div>
+                <div className="h-4 bg-gray-200 dark:bg-gray-600 rounded w-1/2"></div>
+              </div>
+            ))
+          ) : featuredListings.length > 0 ? (
+            featuredListings.map((listing) => (
+              <ProductCard key={listing.id} product={listing} />
+            ))
+          ) : (
+            <div className="col-span-full text-center py-12">
+              <p className="text-gray-600 dark:text-gray-300">No featured listings available at the moment.</p>
+            </div>
+          )}
         </div>
 
         <div className="text-center mt-12">

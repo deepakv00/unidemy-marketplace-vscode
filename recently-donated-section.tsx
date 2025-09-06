@@ -5,17 +5,37 @@ import { useRouter } from "next/navigation"
 import { ArrowRight, Heart } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import ProductCard from "@/product-card"
-import { getDonateGiveawayProducts } from "@/products"
-import type { Product } from "@/store"
+import { getDonateGiveawayProducts } from "@/lib/api/products"
+import type { Database } from "@/lib/supabase"
+
+type Product = Database['public']['Tables']['products']['Row'] & {
+  users: {
+    id: string
+    name: string
+    rating: number
+    verified: boolean
+    avatar?: string
+  }
+}
 
 export default function RecentlyDonatedSection() {
   const [donatedItems, setDonatedItems] = useState<Product[]>([])
+  const [loading, setLoading] = useState(true)
   const router = useRouter()
 
   useEffect(() => {
-    // Get first 3 donated products
-    const donatedProducts = getDonateGiveawayProducts()
-    setDonatedItems(donatedProducts.slice(0, 3))
+    async function loadDonatedProducts() {
+      try {
+        const products = await getDonateGiveawayProducts()
+        setDonatedItems(products.slice(0, 3))
+      } catch (error) {
+        console.error('Error loading donated products:', error)
+      } finally {
+        setLoading(false)
+      }
+    }
+    
+    loadDonatedProducts()
   }, [])
 
   const handleViewAllClick = useCallback(() => {
@@ -29,6 +49,29 @@ export default function RecentlyDonatedSection() {
       window.scrollTo({ top: currentScroll, behavior: "auto" })
     }, 0)
   }, [router])
+
+  if (loading) {
+    return (
+      <section className="py-16 lg:py-24 bg-gradient-to-br from-green-50 via-emerald-50 to-teal-50 dark:from-green-900/10 dark:via-emerald-900/10 dark:to-teal-900/10">
+        <div className="container mx-auto px-4">
+          <div className="text-center mb-12">
+            <div className="h-8 bg-gray-200 dark:bg-gray-600 rounded mx-auto mb-4 w-48"></div>
+            <div className="h-8 bg-gray-200 dark:bg-gray-600 rounded mx-auto mb-4 w-96"></div>
+            <div className="h-4 bg-gray-200 dark:bg-gray-600 rounded mx-auto w-64"></div>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+            {Array.from({ length: 3 }).map((_, i) => (
+              <div key={i} className="bg-white dark:bg-gray-700 rounded-lg p-4 animate-pulse">
+                <div className="aspect-square bg-gray-200 dark:bg-gray-600 rounded-lg mb-4"></div>
+                <div className="h-4 bg-gray-200 dark:bg-gray-600 rounded mb-2"></div>
+                <div className="h-4 bg-gray-200 dark:bg-gray-600 rounded w-2/3"></div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+    )
+  }
 
   if (donatedItems.length === 0) {
     return null

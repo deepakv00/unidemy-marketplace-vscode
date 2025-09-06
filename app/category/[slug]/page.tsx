@@ -1,13 +1,25 @@
 "use client"
 
-import { useState, useMemo, use } from "react"
+import { useState, useEffect, useMemo, use } from "react"
 import { useRouter } from "next/navigation"
 import { ArrowLeft, Filter, Grid, List } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Badge } from "@/components/ui/badge"
-import { useApp, type Product } from "@/store"
+import { getProductsByCategory } from "@/lib/api/products"
+import { getCategoryBySlug } from "@/lib/api/categories"
+import type { Database } from "@/lib/supabase"
 import ProductCard from "@/product-card"
+
+type Product = Database['public']['Tables']['products']['Row'] & {
+  users: {
+    id: string
+    name: string
+    rating: number
+    verified: boolean
+    avatar?: string
+  }
+}
 
 const categoryNames: Record<string, string> = {
   electronics: "Electronics",
@@ -24,34 +36,35 @@ const categoryNames: Record<string, string> = {
 
 export default function CategoryPage({ params }: { params: Promise<{ slug: string }> }) {
   const { slug } = use(params)
-  const { state } = useApp() // Use state instead of products directly
   const router = useRouter()
+  const [products, setProducts] = useState<Product[]>([])
+  const [categoryData, setCategoryData] = useState<any>(null)
+  const [loading, setLoading] = useState(true)
   const [sortBy, setSortBy] = useState("newest")
   const [viewMode, setViewMode] = useState<"grid" | "list">("grid")
 
-  const categoryProducts = useMemo(() => {
-    console.log("[v0] Category page - slug:", slug)
-    console.log("[v0] Available products:", state.products?.length || 0)
-
-    if (!state.products) {
-      console.log("[v0] No products available in state")
-      return []
+  useEffect(() => {
+    async function loadCategoryData() {
+      try {
+        setLoading(true)
+        const [productsData, categoryInfo] = await Promise.all([
+          getProductsByCategory(slug),
+          getCategoryBySlug(slug)
+        ])
+        setProducts(productsData)
+        setCategoryData(categoryInfo)
+      } catch (error) {
+        console.error('Error loading category data:', error)
+      } finally {
+        setLoading(false)
+      }
     }
+    
+    loadCategoryData()
+  }, [slug])
 
-    console.log(
-      "[v0] All product categories:",
-      state.products.map((p) => p.category),
-    )
-
-    const filtered = state.products.filter((product: Product) => {
-      const matches = product.category === slug
-      console.log("[v0] Product:", product.title, "Category:", product.category, "Matches:", matches)
-      return matches
-    })
-
-    console.log("[v0] Filtered products for category", slug, ":", filtered.length)
-
-    return filtered.sort((a, b) => {
+  const categoryProducts = useMemo(() => {
+    return products.sort((a, b) => {
       switch (sortBy) {
         case "price-low":
           return a.price - b.price
@@ -59,12 +72,12 @@ export default function CategoryPage({ params }: { params: Promise<{ slug: strin
           return b.price - a.price
         case "newest":
         default:
-          return b.id - a.id
+          return new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
       }
     })
-  }, [state.products, slug, sortBy])
+  }, [products, sortBy])
 
-  const categoryName = categoryNames[slug] || slug.replace("-", " ")
+  const categoryName = categoryData?.name || categoryNames[slug] || slug.replace("-", " ")
 
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
@@ -136,7 +149,18 @@ export default function CategoryPage({ params }: { params: Promise<{ slug: strin
         )}
 
         {/* Products Grid/List */}
-        {categoryProducts.length > 0 ? (
+        {loading ? (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+            {Array.from({ length: 8 }).map((_, i) => (
+              <div key={i} className="bg-white dark:bg-gray-700 rounded-lg p-4 animate-pulse">
+                <div className="aspect-square bg-gray-200 dark:bg-gray-600 rounded-lg mb-4"></div>
+                <div className="h-4 bg-gray-200 dark:bg-gray-600 rounded mb-2"></div>
+                <div className="h-4 bg-gray-200 dark:bg-gray-600 rounded w-2/3 mb-2"></div>
+                <div className="h-4 bg-gray-200 dark:bg-gray-600 rounded w-1/2"></div>
+              </div>
+            ))}
+          </div>
+        ) : categoryProducts.length > 0 ? (
           <div
             className={
               viewMode === "grid" ? "grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6" : "space-y-4"

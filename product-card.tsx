@@ -2,35 +2,85 @@
 
 import type React from "react"
 
-import { useState, useCallback } from "react"
+import { useState, useEffect, useCallback } from "react"
 import Image from "next/image"
 import { useRouter } from "next/navigation"
 import { Heart, MapPin, Clock, Star, Eye, MessageCircle } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { useAuth } from "@/lib/auth-context"
-import type { Product } from "@/store"
+import { createClient } from "@/lib/supabase-client"
+import { addToWishlist, removeFromWishlist, isInWishlist } from "@/lib/api/wishlist"
+import type { Database } from "@/lib/supabase"
 import { useToast } from "@/hooks/use-toast"
+
+type Product = Database['public']['Tables']['products']['Row'] & {
+  users: {
+    id: string
+    name: string
+    rating: number
+    verified: boolean
+    avatar?: string
+  }
+}
+
+// Utility function to calculate time ago
+function getTimeAgo(dateString: string): string {
+  const now = new Date()
+  const past = new Date(dateString)
+  const diffMs = now.getTime() - past.getTime()
+  
+  const diffSeconds = Math.floor(diffMs / 1000)
+  const diffMinutes = Math.floor(diffSeconds / 60)
+  const diffHours = Math.floor(diffMinutes / 60)
+  const diffDays = Math.floor(diffHours / 24)
+  
+  if (diffDays > 0) return `${diffDays} day${diffDays > 1 ? 's' : ''} ago`
+  if (diffHours > 0) return `${diffHours} hour${diffHours > 1 ? 's' : ''} ago`
+  if (diffMinutes > 0) return `${diffMinutes} minute${diffMinutes > 1 ? 's' : ''} ago`
+  return 'Just now'
+}
 
 interface ProductCardProps {
   product: Product
   viewMode?: "grid" | "list"
+  onWishlistChange?: () => void
+  refreshNotifications?: () => void
 }
 
-export default function ProductCard({ product, viewMode = "grid" }: ProductCardProps) {
-  const { user } = useAuth()
+export default function ProductCard({ product, viewMode = "grid", onWishlistChange, refreshNotifications }: ProductCardProps) {
+  const supabase = createClient()
   const { toast } = useToast()
   const router = useRouter()
-  const [isLiked, setIsLiked] = useState(false) // TODO: Implement wishlist with Supabase
+  const [user, setUser] = useState<any>(null)
+  const [isLiked, setIsLiked] = useState(false)
+  const [loading, setLoading] = useState(true)
+
+  // Check authentication and wishlist status
+  useEffect(() => {
+    async function checkUserAndWishlist() {
+      try {
+        const { data: { user } } = await supabase.auth.getUser()
+        setUser(user)
+        
+        if (user) {
+          const wishlistStatus = await isInWishlist(user.id, product.id)
+          setIsLiked(wishlistStatus)
+        }
+      } catch (error) {
+        console.error('Error checking user/wishlist:', error)
+      } finally {
+        setLoading(false)
+      }
+    }
+    
+    checkUserAndWishlist()
+  }, [product.id])
 
   const handleAddToWishlist = useCallback(
-    (e: React.MouseEvent) => {
+    async (e: React.MouseEvent) => {
       e.preventDefault()
       e.stopPropagation()
-
-      // Preserve scroll position
-      const currentScroll = window.pageYOffset || document.documentElement.scrollTop
 
       if (!user) {
         toast({
@@ -42,25 +92,45 @@ export default function ProductCard({ product, viewMode = "grid" }: ProductCardP
         return
       }
 
-      // TODO: Implement wishlist functionality with Supabase
-      if (isLiked) {
-        setIsLiked(false)
+      try {
+        if (isLiked) {
+          const success = await removeFromWishlist(user.id, product.id)
+          if (success) {
+            setIsLiked(false)
+            toast({
+              title: "Removed from favorites",
+              description: `${product.title} has been removed from your favorites.`,
+            })
+            onWishlistChange?.()
+            refreshNotifications?.()
+            // Refresh header notification counts
+            if (typeof window !== 'undefined' && (window as any).refreshNotificationCounts) {
+              (window as any).refreshNotificationCounts()
+            }
+          }
+        } else {
+          const success = await addToWishlist(user.id, product.id)
+          if (success) {
+            setIsLiked(true)
+            toast({
+              title: "Added to favorites",
+              description: `${product.title} has been added to your favorites.`,
+            })
+            onWishlistChange?.()
+            refreshNotifications?.()
+            // Refresh header notification counts
+            if (typeof window !== 'undefined' && (window as any).refreshNotificationCounts) {
+              (window as any).refreshNotificationCounts()
+            }
+          }
+        }
+      } catch (error) {
         toast({
-          title: "Removed from favorites",
-          description: `${product.title} has been removed from your favorites.`,
-        })
-      } else {
-        setIsLiked(true)
-        toast({
-          title: "Added to favorites",
-          description: `${product.title} has been added to your favorites.`,
+          title: "Error",
+          description: "Something went wrong. Please try again.",
+          variant: "destructive",
         })
       }
-
-      // Restore scroll position
-      setTimeout(() => {
-        window.scrollTo({ top: currentScroll, behavior: "auto" })
-      }, 0)
     },
     [user, isLiked, product, toast, router],
   )
@@ -83,7 +153,7 @@ export default function ProductCard({ product, viewMode = "grid" }: ProductCardP
         return
       }
 
-      router.push(`/messages?seller=${encodeURIComponent(product.seller.name)}&product=${product.id}`)
+      router.push(`/messages?seller=${encodeURIComponent(product.users?.name || 'Unknown')}&product=${product.id}`)
 
       // Restore scroll position
       setTimeout(() => {
@@ -130,7 +200,7 @@ export default function ProductCard({ product, viewMode = "grid" }: ProductCardP
           onClick={handleCardClick}
         >
           <Image
-            src={product.image || "/placeholder.svg"}
+            src={product.images?.[0] || "/placeholder.svg"}
             alt={product.title}
             fill
             className="object-cover group-hover:scale-105 transition-transform duration-300"
@@ -164,7 +234,7 @@ export default function ProductCard({ product, viewMode = "grid" }: ProductCardP
             </Badge>
             <div className="flex items-center text-xs text-gray-500">
               <Eye className="h-3 w-3 mr-1" />
-              234
+              {product.views || 0}
             </div>
           </div>
 
@@ -180,9 +250,9 @@ export default function ProductCard({ product, viewMode = "grid" }: ProductCardP
             ) : (
               <>
                 <span className="text-2xl font-bold text-green-600">₹{product.price.toLocaleString()}</span>
-                {product.originalPrice && (
+                {product.original_price && (
                   <span className="text-sm text-gray-500 line-through ml-2">
-                    ₹{product.originalPrice.toLocaleString()}
+                    ₹{product.original_price.toLocaleString()}
                   </span>
                 )}
               </>
@@ -193,11 +263,11 @@ export default function ProductCard({ product, viewMode = "grid" }: ProductCardP
             <MapPin className="h-4 w-4 mr-1" />
             {product.location}
             <Clock className="h-4 w-4 ml-3 mr-1" />
-            {product.timeAgo}
+            {getTimeAgo(product.created_at)}
           </div>
 
-          {/* Contact Seller Button */}
-          <div className="mb-4">
+          {/* Action Buttons */}
+          <div className="mb-4 space-y-2">
             <Button
               type="button"
               size="sm"
@@ -207,17 +277,40 @@ export default function ProductCard({ product, viewMode = "grid" }: ProductCardP
               <MessageCircle className="h-4 w-4 mr-2" />
               {product.category === "donate-giveaway" ? "Request Item" : "Contact Seller"}
             </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={(e) => {
+                e.preventDefault()
+                e.stopPropagation()
+                router.push(`/listing/${product.id}`)
+              }}
+              className="w-full bg-transparent focus-no-scroll"
+            >
+              View Details
+            </Button>
           </div>
 
           <div className="flex items-center justify-between pt-3 border-t">
             <div className="flex items-center">
               <div className="h-8 w-8 rounded-full bg-gradient-to-r from-blue-400 to-purple-500 flex items-center justify-center mr-2">
-                <span className="text-white text-xs font-semibold">{product.seller.name.charAt(0)}</span>
+                {product.users?.avatar ? (
+                  <Image
+                    src={product.users.avatar}
+                    alt={product.users.name || 'User'}
+                    width={32}
+                    height={32}
+                    className="rounded-full"
+                  />
+                ) : (
+                  <span className="text-white text-xs font-semibold">{(product.users?.name || 'U').charAt(0)}</span>
+                )}
               </div>
               <div>
                 <div className="text-sm font-medium text-gray-900 dark:text-white">
-                  {product.seller.name}
-                  {product.seller.verified && (
+                  {product.users?.name || 'Unknown User'}
+                  {product.users?.verified && (
                     <Badge variant="secondary" className="ml-1 text-xs">
                       ✓
                     </Badge>
@@ -225,7 +318,7 @@ export default function ProductCard({ product, viewMode = "grid" }: ProductCardP
                 </div>
                 <div className="flex items-center">
                   <Star className="h-3 w-3 fill-yellow-400 text-yellow-400 mr-1" />
-                  <span className="text-xs text-gray-500">{product.seller.rating}</span>
+                  <span className="text-xs text-gray-500">{product.users?.rating || 4.0}</span>
                 </div>
               </div>
             </div>

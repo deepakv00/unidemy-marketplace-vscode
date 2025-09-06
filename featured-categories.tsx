@@ -1,90 +1,65 @@
 "use client"
 
-import { useCallback } from "react"
+import { useState, useEffect, useCallback } from "react"
 import { useRouter } from "next/navigation"
 import { Smartphone, Car, Home, Shirt, Gamepad2, Book, Dumbbell, Baby, Heart, Truck, ArrowRight } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
+import { getCategories } from "@/lib/api/categories"
+import { createClient } from "@/lib/supabase-client"
 
-const categories = [
-  {
-    name: "Electronics",
-    icon: Smartphone,
-    slug: "electronics",
-    color: "from-blue-500 to-cyan-500",
-    href: "/category/electronics",
-  },
-  {
-    name: "Vehicles",
-    icon: Car,
-    slug: "vehicles",
-    color: "from-red-500 to-pink-500",
-    href: "/category/vehicles",
-  },
-  {
-    name: "Home & Garden",
-    icon: Home,
-    slug: "home-garden",
-    color: "from-green-500 to-emerald-500",
-    href: "/category/home-garden",
-  },
-  {
-    name: "Fashion",
-    icon: Shirt,
-    slug: "fashion",
-    color: "from-purple-500 to-violet-500",
-    href: "/category/fashion",
-  },
-  {
-    name: "Gaming",
-    icon: Gamepad2,
-    slug: "gaming",
-    color: "from-orange-500 to-yellow-500",
-    href: "/category/gaming",
-  },
-  {
-    name: "Books",
-    icon: Book,
-    slug: "books",
-    color: "from-indigo-500 to-blue-500",
-    href: "/category/books",
-  },
-  {
-    name: "Sports",
-    icon: Dumbbell,
-    slug: "sports",
-    color: "from-teal-500 to-green-500",
-    href: "/category/sports",
-  },
-  {
-    name: "Baby & Kids",
-    icon: Baby,
-    slug: "baby-kids",
-    color: "from-pink-500 to-rose-500",
-    href: "/category/baby-kids",
-  },
-  {
-    name: "Donate/Giveaway",
-    icon: Heart,
-    slug: "donate-giveaway",
-    color: "from-emerald-500 to-green-500",
-    href: "/category/donate-giveaway",
-  },
-  {
-    name: "Moving Out",
-    icon: Truck,
-    slug: "moving-out",
-    color: "from-red-500 to-orange-500",
-    href: "/category/moving-out",
-  },
-]
+// Icon mapping for categories
+const iconMap: Record<string, any> = {
+  'Smartphone': Smartphone,
+  'Car': Car,
+  'Home': Home,
+  'Shirt': Shirt,
+  'Gamepad2': Gamepad2,
+  'Book': Book,
+  'Dumbbell': Dumbbell,
+  'Baby': Baby,
+  'Heart': Heart,
+  'Truck': Truck,
+}
 
 export default function FeaturedCategories() {
   const router = useRouter()
+  const supabase = createClient()
+  const [categories, setCategories] = useState<any[]>([])
+  const [productCounts, setProductCounts] = useState<Record<string, number>>({})
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    async function loadCategoriesAndCounts() {
+      try {
+        // Load categories from database
+        const categoriesData = await getCategories()
+        setCategories(categoriesData)
+
+        // Get product counts for each category
+        const counts: Record<string, number> = {}
+        for (const category of categoriesData) {
+          const { count } = await supabase
+            .from('products')
+            .select('*', { count: 'exact', head: true })
+            .eq('category', category.slug)
+            .eq('status', 'active')
+          
+          counts[category.slug] = count || 0
+        }
+        setProductCounts(counts)
+      } catch (error) {
+        console.error('Error loading categories:', error)
+      } finally {
+        setLoading(false)
+      }
+    }
+
+    loadCategoriesAndCounts()
+  }, [])
 
   const getCategoryCount = (categorySlug: string) => {
-    // For now, return a placeholder count. This will be updated when we integrate with Supabase
-    return 0
+    return productCounts[categorySlug] || 0
   }
 
   const handleCategoryClick = useCallback(
@@ -125,32 +100,45 @@ export default function FeaturedCategories() {
         </div>
 
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-6 mb-12">
-          {categories.map((category, index) => {
-            const IconComponent = category.icon
-            const productCount = getCategoryCount(category.slug)
-            const displayCount =
-              productCount > 0 ? `${productCount} item${productCount !== 1 ? "s" : ""}` : "No items yet"
-
-            return (
-              <Card
-                key={index}
-                className="group hover:shadow-xl transition-all duration-300 hover:-translate-y-2 cursor-pointer border-2 hover:border-transparent prevent-layout-shift"
-                onClick={() => handleCategoryClick(category.href)}
-              >
+          {loading ? (
+            // Loading skeleton
+            Array.from({ length: 10 }).map((_, i) => (
+              <Card key={i} className="animate-pulse">
                 <CardContent className="p-6 text-center">
-                  <div
-                    className={`w-16 h-16 mx-auto mb-4 rounded-2xl bg-gradient-to-r ${category.color} flex items-center justify-center group-hover:scale-110 transition-transform duration-300`}
-                  >
-                    <IconComponent className="h-8 w-8 text-white" />
-                  </div>
-                  <h3 className="font-semibold text-lg mb-2 text-gray-900 dark:text-white group-hover:text-blue-600 transition-colors">
-                    {category.name}
-                  </h3>
-                  <p className="text-sm text-gray-500 dark:text-gray-400">{displayCount}</p>
+                  <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-gray-200 dark:bg-gray-600"></div>
+                  <div className="h-4 bg-gray-200 dark:bg-gray-600 rounded mb-2"></div>
+                  <div className="h-3 bg-gray-200 dark:bg-gray-600 rounded w-2/3 mx-auto"></div>
                 </CardContent>
               </Card>
-            )
-          })}
+            ))
+          ) : (
+            categories.map((category, index) => {
+              const IconComponent = iconMap[category.icon] || Smartphone
+              const productCount = getCategoryCount(category.slug)
+              const displayCount =
+                productCount > 0 ? `${productCount} item${productCount !== 1 ? "s" : ""}` : "No items yet"
+
+              return (
+                <Card
+                  key={index}
+                  className="group hover:shadow-xl transition-all duration-300 hover:-translate-y-2 cursor-pointer border-2 hover:border-transparent prevent-layout-shift"
+                  onClick={() => handleCategoryClick(`/category/${category.slug}`)}
+                >
+                  <CardContent className="p-6 text-center">
+                    <div
+                      className={`w-16 h-16 mx-auto mb-4 rounded-2xl bg-gradient-to-r ${category.color} flex items-center justify-center group-hover:scale-110 transition-transform duration-300`}
+                    >
+                      <IconComponent className="h-8 w-8 text-white" />
+                    </div>
+                    <h3 className="font-semibold text-lg mb-2 text-gray-900 dark:text-white group-hover:text-blue-600 transition-colors">
+                      {category.name}
+                    </h3>
+                    <p className="text-sm text-gray-500 dark:text-gray-400">{displayCount}</p>
+                  </CardContent>
+                </Card>
+              )
+            })
+          )}
         </div>
 
         <div className="text-center">

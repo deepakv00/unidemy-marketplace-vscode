@@ -2,7 +2,7 @@
 
 import type React from "react"
 
-import { useState, useCallback } from "react"
+import { useState, useEffect, useCallback } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { Search, Heart, User, Menu, Plus, MessageCircle } from "lucide-react"
@@ -12,7 +12,9 @@ import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet"
 import { Badge } from "@/components/ui/badge"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
-import { useAuth } from "@/lib/auth-context"
+import { createClient } from "@/lib/supabase-client"
+import { getWishlistCount } from "@/lib/api/wishlist"
+import { getUnreadMessageCount } from "@/lib/api/messages"
 import { ThemeToggle } from "@/theme-toggle"
 
 const categories = [
@@ -29,10 +31,86 @@ const categories = [
 ]
 
 export default function Header() {
-  const { user, signOut } = useAuth()
+  const supabase = createClient()
   const router = useRouter()
+  const [user, setUser] = useState<any>(null)
   const [searchQuery, setSearchQuery] = useState("")
   const [isMenuOpen, setIsMenuOpen] = useState(false)
+  const [wishlistCount, setWishlistCount] = useState(0)
+  const [unreadMessagesCount, setUnreadMessagesCount] = useState(0)
+  const [loading, setLoading] = useState(true)
+
+  // Load user and notification counts
+  useEffect(() => {
+    async function loadUserAndCounts() {
+      try {
+        const { data: { user } } = await supabase.auth.getUser()
+        setUser(user)
+        
+        if (user) {
+          // Load notification counts
+          const [wishlistCountData, messagesCountData] = await Promise.all([
+            getWishlistCount(user.id),
+            getUnreadMessageCount(user.id)
+          ])
+          
+          setWishlistCount(wishlistCountData)
+          setUnreadMessagesCount(messagesCountData)
+        }
+      } catch (error) {
+        console.error('Error loading user data:', error)
+      } finally {
+        setLoading(false)
+      }
+    }
+    
+    loadUserAndCounts()
+    
+    // Listen for auth state changes
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+      setUser(session?.user || null)
+      if (session?.user) {
+        // Refresh counts when user logs in
+        const [wishlistCountData, messagesCountData] = await Promise.all([
+          getWishlistCount(session.user.id),
+          getUnreadMessageCount(session.user.id)
+        ])
+        setWishlistCount(wishlistCountData)
+        setUnreadMessagesCount(messagesCountData)
+      } else {
+        // Clear counts when user logs out
+        setWishlistCount(0)
+        setUnreadMessagesCount(0)
+      }
+    })
+    
+    return () => {
+      subscription.unsubscribe()
+    }
+  }, [])
+
+  // Refresh notification counts when needed
+  const refreshNotificationCounts = async () => {
+    if (!user) return
+    
+    try {
+      const [wishlistCountData, messagesCountData] = await Promise.all([
+        getWishlistCount(user.id),
+        getUnreadMessageCount(user.id)
+      ])
+      setWishlistCount(wishlistCountData)
+      setUnreadMessagesCount(messagesCountData)
+    } catch (error) {
+      console.error('Error refreshing notification counts:', error)
+    }
+  }
+
+  // Set up global refresh function for other components to use
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      (window as any).refreshNotificationCounts = refreshNotificationCounts
+    }
+  }, [user])
 
   const handleSearch = useCallback(
     (e: React.FormEvent) => {
@@ -57,14 +135,14 @@ export default function Header() {
     // Preserve scroll position
     const currentScroll = window.pageYOffset || document.documentElement.scrollTop
 
-    await signOut()
+    await supabase.auth.signOut()
     router.push("/")
 
     // Restore scroll position
     setTimeout(() => {
       window.scrollTo({ top: currentScroll, behavior: "auto" })
     }, 0)
-  }, [signOut, router])
+  }, [supabase.auth, router])
 
   const handleNavigation = useCallback(
     (href: string) => {
@@ -133,12 +211,27 @@ export default function Header() {
                 <Link href="/messages" className="focus-no-scroll">
                   <Button variant="ghost" size="sm" className="relative focus-no-scroll">
                     <MessageCircle className="h-5 w-5" />
+                    {unreadMessagesCount > 0 && (
+                      <Badge 
+                        className="absolute -top-2 -right-2 h-5 w-5 flex items-center justify-center text-xs bg-red-500 hover:bg-red-600 border-2 border-background"
+                        variant="destructive"
+                      >
+                        {unreadMessagesCount > 99 ? '99+' : unreadMessagesCount}
+                      </Badge>
+                    )}
                   </Button>
                 </Link>
 
                 <Link href="/wishlist" className="focus-no-scroll">
                   <Button variant="ghost" size="sm" className="relative focus-no-scroll">
                     <Heart className="h-5 w-5" />
+                    {wishlistCount > 0 && (
+                      <Badge 
+                        className="absolute -top-2 -right-2 h-5 w-5 flex items-center justify-center text-xs bg-blue-500 hover:bg-blue-600 border-2 border-background"
+                      >
+                        {wishlistCount > 99 ? '99+' : wishlistCount}
+                      </Badge>
+                    )}
                   </Button>
                 </Link>
 
@@ -226,18 +319,28 @@ export default function Header() {
                     <Button
                       onClick={() => handleNavigation("/messages")}
                       variant="ghost"
-                      className="w-full justify-start focus-no-scroll"
+                      className="w-full justify-start focus-no-scroll relative"
                     >
                       <MessageCircle className="h-4 w-4 mr-2" />
                       Messages
+                      {unreadMessagesCount > 0 && (
+                        <Badge className="ml-auto h-5 w-5 flex items-center justify-center text-xs bg-red-500" variant="destructive">
+                          {unreadMessagesCount > 99 ? '99+' : unreadMessagesCount}
+                        </Badge>
+                      )}
                     </Button>
                     <Button
                       onClick={() => handleNavigation("/wishlist")}
                       variant="ghost"
-                      className="w-full justify-start focus-no-scroll"
+                      className="w-full justify-start focus-no-scroll relative"
                     >
                       <Heart className="h-4 w-4 mr-2" />
                       Favorites
+                      {wishlistCount > 0 && (
+                        <Badge className="ml-auto h-5 w-5 flex items-center justify-center text-xs bg-blue-500">
+                          {wishlistCount > 99 ? '99+' : wishlistCount}
+                        </Badge>
+                      )}
                     </Button>
                     <Button
                       onClick={() => handleNavigation("/profile")}
