@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState, Suspense } from "react"
 import { useRouter, useSearchParams } from "next/navigation"
 import { Mail, ArrowRight, RefreshCw } from "lucide-react"
 import { Button } from "@/components/ui/button"
@@ -8,7 +8,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { useToast } from "@/components/ui/use-toast"
 import { useAuth } from "@/lib/auth-context"
 
-export default function ConfirmEmailPage() {
+function ConfirmEmailContent() {
   const [isResending, setIsResending] = useState(false)
   const router = useRouter()
   const searchParams = useSearchParams()
@@ -16,7 +16,7 @@ export default function ConfirmEmailPage() {
   const { resendConfirmation } = useAuth()
   
   const email = searchParams.get('email') || ''
-
+  
   const handleResendEmail = async () => {
     if (!email) {
       toast({
@@ -144,12 +144,14 @@ export default function ConfirmEmailPage() {
   )
 }
 
-
-
-
-
-
-
-
-
-
+export default function ConfirmEmailPage() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-blue-600"></div>
+      </div>
+    }>
+      <ConfirmEmailContent />
+    </Suspense>
+  )
+}
